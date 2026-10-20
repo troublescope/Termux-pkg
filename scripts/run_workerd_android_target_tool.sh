@@ -8,13 +8,21 @@ fi
 
 tool=$1
 shift
-manifest=$1
-shift
-extra_args=("$@")
+args=("$@")
 here=$PWD
 
+manifest=""
+manifest_idx=-1
+for i in "${!args[@]}"; do
+  if [[ -f "${args[$i]}" ]]; then
+    manifest="${args[$i]}"
+    manifest_idx=$i
+    break
+  fi
+done
+
 [[ -x "$tool" ]] || { echo "Android target tool is not executable: $tool" >&2; exit 2; }
-[[ -f "$manifest" ]] || { echo "Expected compile-cache manifest as first argument: $manifest" >&2; exit 2; }
+[[ -n "$manifest" ]] || { echo "Expected compile-cache manifest in arguments: $*" >&2; exit 2; }
 command -v docker >/dev/null || { echo "docker is required to execute Android target tools" >&2; exit 2; }
 
 staged_tool=$(mktemp -p "$here" .android-runner-tool.XXXXXX)
@@ -38,7 +46,7 @@ cp -L "$tool" "$staged_tool"
 chmod a+rx "$staged_tool"
 
 index=0
-while IFS= read -r input output || [[ -n "${input:-}" ]]; do
+while read -r input output || [[ -n "${input:-}" ]]; do
   [[ -n "${input:-}" && -n "${output:-}" ]] || continue
   staged_input="$here/.android-runner-input.$index"
   staged_output="$here/.android-runner-output.$index"
@@ -60,10 +68,12 @@ done < "$manifest"
 ((${#outputs[@]} > 0)) || { echo "Android target manifest contained no outputs" >&2; exit 2; }
 chmod a+r "$staged_manifest"
 
+args[$manifest_idx]="$staged_manifest"
+
 docker run --rm --platform linux/arm64 \
   -v "$here:$here" -w "$here" \
   termux/termux-docker:aarch64 \
-  "$staged_tool" "$staged_manifest" "${extra_args[@]}"
+  "$staged_tool" "${args[@]}"
 
 for index in "${!outputs[@]}"; do
   staged_output=${staged_outputs[$index]}
