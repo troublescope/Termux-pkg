@@ -189,6 +189,9 @@ jobs:
           if [[ -f workerd/src/pyodide/helpers.bzl ]]; then
             grep -F 'use_execroot_entry_point = False' workerd/src/pyodide/helpers.bzl
           fi
+          if [[ -f workerd/src/rust/cxx/kj-hyper/tls.rs ]]; then
+            grep -F 'target_os = "android"' workerd/src/rust/cxx/kj-hyper/tls.rs
+          fi
           if grep -q -F 'name = "rust_cc_common_link"' workerd/build/config/BUILD.bazel; then
             grep -A4 -F 'name = "rust_cc_common_link"' workerd/build/config/BUILD.bazel \
               | grep -F 'constraint_values = ["@platforms//os:android"]'

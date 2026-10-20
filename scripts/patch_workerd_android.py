@@ -464,6 +464,67 @@ uint64_t le64toh(uint64_t x) { return __builtin_bswap64(x); }
         if target_needle in pyodide_text and "use_execroot_entry_point = False" not in pyodide_text:
             replace_once(pyodide_helpers, target_needle, replacement)
 
+    # kj-hyper uses rustls-platform-verifier's new_with_extra_roots which is not
+    # available on Android (where rustls-platform-verifier uses Android JNI).
+    # On Android / Termux, verify using the platform/Termux root certificate store.
+    tls_rs = tree / "src" / "rust" / "cxx" / "kj-hyper" / "tls.rs"
+    if tls_rs.exists():
+        tls_text = tls_rs.read_text(encoding="utf-8")
+        old_verifier = '''    let verifier: Option<Arc<dyn ServerCertVerifier>> = if options.trust_browser_cas {
+        Some(Arc::new(
+            rustls_platform_verifier::Verifier::new_with_extra_roots(
+                trusted.clone(),
+                provider.clone(),
+            )
+            .map_err(config_error)?,
+        ))
+    }'''
+        android_verifier = '''    let verifier: Option<Arc<dyn ServerCertVerifier>> = if options.trust_browser_cas {
+        #[cfg(not(target_os = "android"))]
+        let v: Arc<dyn ServerCertVerifier> = Arc::new(
+            rustls_platform_verifier::Verifier::new_with_extra_roots(
+                trusted.clone(),
+                provider.clone(),
+            )
+            .map_err(config_error)?,
+        );
+        #[cfg(target_os = "android")]
+        let v: Arc<dyn ServerCertVerifier> = {
+            let mut roots = roots(&trusted);
+            for path in [
+                "/data/data/com.termux/files/usr/etc/tls/cert.pem",
+                "/data/data/com.termux/files/usr/etc/ssl/cert.pem",
+                "/etc/ssl/certs/ca-certificates.crt",
+                "/system/etc/security/cacerts",
+            ] {
+                let p = std::path::Path::new(path);
+                if p.is_file() {
+                    if let Ok(data) = std::fs::read(p) {
+                        for cert in CertificateDer::pem_slice_iter(&data).flatten() {
+                            let _ = roots.add(cert);
+                        }
+                    }
+                } else if p.is_dir() {
+                    if let Ok(entries) = std::fs::read_dir(p) {
+                        for entry in entries.flatten() {
+                            if let Ok(data) = std::fs::read(entry.path()) {
+                                for cert in CertificateDer::pem_slice_iter(&data).flatten() {
+                                    let _ = roots.add(cert);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            WebPkiServerVerifier::builder_with_provider(Arc::new(roots), provider.clone())
+                .build()
+                .map_err(config_error)?
+        };
+        Some(v)
+    }'''
+        if old_verifier in tls_text and 'target_os = "android"' not in tls_text:
+            replace_once(tls_rs, old_verifier, android_verifier)
+
     bazelrc = tree / ".bazelrc"
     bazelrc_text = bazelrc.read_text(encoding="utf-8")
     if "build:android --config=unix" not in bazelrc_text:

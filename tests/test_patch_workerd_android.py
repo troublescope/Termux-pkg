@@ -110,6 +110,22 @@ class PatchWorkerdAndroidTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
+            # Rust kj-hyper tls.rs
+            (tree / "src" / "rust" / "cxx" / "kj-hyper").mkdir(parents=True)
+            tls_file = tree / "src" / "rust" / "cxx" / "kj-hyper" / "tls.rs"
+            tls_file.write_text(
+                '    let verifier: Option<Arc<dyn ServerCertVerifier>> = if options.trust_browser_cas {\n'
+                '        Some(Arc::new(\n'
+                '            rustls_platform_verifier::Verifier::new_with_extra_roots(\n'
+                '                trusted.clone(),\n'
+                '                provider.clone(),\n'
+                '            )\n'
+                '            .map_err(config_error)?,\n'
+                '        ))\n'
+                '    } else {\n',
+                encoding="utf-8",
+            )
+
             res = subprocess.run([sys.executable, str(PATCH_SCRIPT), str(tree)], capture_output=True, text=True)
             self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
 
@@ -118,6 +134,9 @@ class PatchWorkerdAndroidTests(unittest.TestCase):
 
             # Check tools BUILD.bazel was untouched (js_binary does not have use_execroot_entry_point)
             self.assertNotIn("use_execroot_entry_point", tools_file.read_text(encoding="utf-8"))
+
+            # Check tls.rs was patched for android
+            self.assertIn('target_os = "android"', tls_file.read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":
