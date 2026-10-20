@@ -198,27 +198,24 @@ selects.config_setting_group(
     ensure_quoted_project_include(
         tree / "src" / "workerd" / "jsg" / "modules-new.c++", "simdutf.h"
     )
-    # V8's Android stack trace source uses an angle-bracket include for a V8
-    # project header. In the Bazel Android target that header is available as a
-    # project-relative include, not as a system include.
-    v8_patch_name = "0040-Fix-Android-stack-trace-project-include.patch"
-    v8_patch = tree / "patches" / "v8" / v8_patch_name
-    v8_patch.write_text(
-        "\n".join([
-            "diff --git a/src/base/debug/stack_trace_android.cc b/src/base/debug/stack_trace_android.cc",
-            "--- a/src/base/debug/stack_trace_android.cc",
-            "+++ b/src/base/debug/stack_trace_android.cc",
-            "@@ -15 +15 @@",
-            "-#include <src/base/platform/platform.h>",
-            "+#include \"src/base/platform/platform.h\"",
-        ]) + "\n",
-        encoding="utf-8",
-    )
-
+    # Configure V8 for Android via patch_cmds so modifications are resilient
+    # against upstream line-number and context shifts across V8 versions.
     v8_module = tree / "build" / "deps" / "v8.MODULE.bazel"
-    append_bazel_string_list_item(v8_module, "PATCHES", v8_patch_name)
+    v8_module_text = v8_module.read_text(encoding="utf-8")
+    if "patch_cmds =" not in v8_module_text and 'patch_args = ["-p1"],' in v8_module_text:
+        replace_once(
+            v8_module,
+            '    patch_args = ["-p1"],\n',
+            '    patch_args = ["-p1"],\n'
+            '    patch_cmds = [\n'
+            '        "python3 -c \'import pathlib; p = pathlib.Path(\\\"bazel/defs.bzl\\\"); text = p.read_text(); text = text.replace(\\\"//conditions:default\\\\\\\": \\\\\\\"\\\\\\\",\\\", \\\"//conditions:default\\\\\\\": \\\\\\\"android\\\\\\\",\\\"); text = text.replace(\\\"-std=c++20\\\", \\\"-std=c++23\\\"); p.write_text(text)\'",\n'
+            '        "python3 -c \'import pathlib; p = pathlib.Path(\\\"src/base/debug/stack_trace_android.cc\\\"); p.is_file() and p.write_text(p.read_text().replace(\\\"<src/base/platform/platform.h>\\\", \\\"\\\\\\\"src/base/platform/platform.h\\\\\\\"\\\"))\'",\n'
+            '        "python3 -c \'import pathlib; p = pathlib.Path(\\\"src/compiler/turboshaft/wasm-shuffle-reducer.cc\\\"); p.is_file() and p.write_text(p.read_text().replace(\\\"SimdShuffle::ShuffleArray shuffle_bytes;\\\", \\\"SimdShuffle::ShuffleArray<kSimd128Size> shuffle_bytes;\\\"))\'",\n'
+            '        "python3 -c \'import pathlib; p = pathlib.Path(\\\"src/runtime/runtime-literals.cc\\\"); p.is_file() and p.write_text(p.read_text().replace(\\\"DirectHandle<NativeContext> native_context = isolate->native_context();\\\", \\\"\\\"))\'",\n'
+            '    ],\n',
+        )
 
-    v8_atomic_patch_name = "0041-Provide-atomic-ref-on-Android.patch"
+    v8_atomic_patch_name = "0091-Provide-atomic-ref-on-Android.patch"
     v8_atomic_patch = tree / "patches" / "v8" / v8_atomic_patch_name
     v8_atomic_patch.write_text(
         'diff --git a/include/v8config.h b/include/v8config.h\n--- a/include/v8config.h\n+++ b/include/v8config.h\n@@ -21,7 +21,104 @@\n #include "v8-gn.h"  // NOLINT(build/include_directory)\n #endif\n \n+#include <atomic>\n #include <memory>\n+\n+// Android NDK libc++ does not currently provide C++20 std::atomic_ref. V8\n+// relies on atomic_ref for atomically accessing existing storage, so provide\n+// the subset of the interface V8 uses via Clang\'s __atomic builtins.\n+#if defined(__ANDROID__) && !defined(__cpp_lib_atomic_ref)\n+namespace std {\n+namespace __v8_android_atomic_ref_compat {\n+constexpr int ToBuiltinOrder(memory_order order) noexcept {\n+  switch (order) {\n+    case memory_order_relaxed: return __ATOMIC_RELAXED;\n+    case memory_order_consume: return __ATOMIC_CONSUME;\n+    case memory_order_acquire: return __ATOMIC_ACQUIRE;\n+    case memory_order_release: return __ATOMIC_RELEASE;\n+    case memory_order_acq_rel: return __ATOMIC_ACQ_REL;\n+    case memory_order_seq_cst: return __ATOMIC_SEQ_CST;\n+  }\n+  __builtin_unreachable();\n+}\n+constexpr memory_order FailureOrder(memory_order order) noexcept {\n+  if (order == memory_order_release) return memory_order_relaxed;\n+  if (order == memory_order_acq_rel) return memory_order_acquire;\n+  return order;\n+}\n+}  // namespace __v8_android_atomic_ref_compat\n+\n+template <typename T>\n+class atomic_ref {\n+ public:\n+  using value_type = T;\n+  static constexpr size_t required_alignment = alignof(T);\n+  static constexpr bool is_always_lock_free =\n+      __atomic_always_lock_free(sizeof(T), nullptr);\n+\n+  explicit atomic_ref(T& object) noexcept : ptr_(&object) {}\n+  atomic_ref(const atomic_ref&) noexcept = default;\n+\n+  T load(memory_order order = memory_order_seq_cst) const noexcept {\n+    T value;\n+    __atomic_load(ptr_, &value,\n+                  __v8_android_atomic_ref_compat::ToBuiltinOrder(order));\n+    return value;\n+  }\n+\n+  void store(T desired,\n+             memory_order order = memory_order_seq_cst) const noexcept {\n+    __atomic_store(ptr_, &desired,\n+                   __v8_android_atomic_ref_compat::ToBuiltinOrder(order));\n+  }\n+\n+  T exchange(T desired,\n+             memory_order order = memory_order_seq_cst) const noexcept {\n+    T old;\n+    __atomic_exchange(ptr_, &desired, &old,\n+                      __v8_android_atomic_ref_compat::ToBuiltinOrder(order));\n+    return old;\n+  }\n+\n+  bool compare_exchange_strong(T& expected, T desired, memory_order success,\n+                               memory_order failure) const noexcept {\n+    return __atomic_compare_exchange(\n+        ptr_, &expected, &desired, false,\n+        __v8_android_atomic_ref_compat::ToBuiltinOrder(success),\n+        __v8_android_atomic_ref_compat::ToBuiltinOrder(failure));\n+  }\n+\n+  bool compare_exchange_strong(\n+      T& expected, T desired,\n+      memory_order order = memory_order_seq_cst) const noexcept {\n+    return compare_exchange_strong(\n+        expected, desired, order,\n+        __v8_android_atomic_ref_compat::FailureOrder(order));\n+  }\n+\n+  template <typename U = T>\n+  enable_if_t<is_integral_v<U>, U> fetch_or(\n+      U arg, memory_order order = memory_order_seq_cst) const noexcept {\n+    return __atomic_fetch_or(\n+        ptr_, arg, __v8_android_atomic_ref_compat::ToBuiltinOrder(order));\n+  }\n+\n+  template <typename U = T>\n+  enable_if_t<is_integral_v<U>, U> fetch_add(\n+      U arg, memory_order order = memory_order_seq_cst) const noexcept {\n+    return __atomic_fetch_add(\n+        ptr_, arg, __v8_android_atomic_ref_compat::ToBuiltinOrder(order));\n+  }\n+\n+  bool is_lock_free() const noexcept {\n+    return __atomic_is_lock_free(sizeof(T), ptr_);\n+  }\n+\n+ private:\n+  T* ptr_;\n+};\n+}  // namespace std\n+#endif  // defined(__ANDROID__) && !defined(__cpp_lib_atomic_ref)\n // clang-format off\n \n // Platform headers for feature detection below.\n',
@@ -227,111 +224,7 @@ selects.config_setting_group(
 
     append_bazel_string_list_item(v8_module, "PATCHES", v8_atomic_patch_name)
 
-    # V8's Bazel helpers default generator tools to the target configuration.
-    # Its own comment notes cross-compilation must use exec so generators,
-    # Torque, and mksnapshot execute on the Linux build host rather than Android.
-    v8_exec_patch_name = "0042-Build-V8-generators-in-exec-configuration.patch"
-    v8_exec_patch = tree / "patches" / "v8" / v8_exec_patch_name
-    v8_exec_patch.write_text(
-        "\n".join([
-            "diff --git a/bazel/defs.bzl b/bazel/defs.bzl",
-            "--- a/bazel/defs.bzl",
-            "+++ b/bazel/defs.bzl",
-            "@@ -353 +353 @@ def get_cfg():",
-            "-    return \"target\"",
-            "+    return \"exec\"",
-        ]) + "\n",
-        encoding="utf-8",
-    )
 
-    append_bazel_string_list_item(v8_module, "PATCHES", v8_exec_patch_name)
-
-    # workerd builds V8 under C++23, but V8's Bazel defaults append C++20
-    # after the repository-wide flags. Once generator dependencies move to the
-    # exec configuration that trailing flag breaks V8 15's immediate-function
-    # regexp code on the Linux host. Keep Clang V8 builds on C++23 as intended.
-    v8_cxx23_patch_name = "0043-Use-CXX23-for-Clang-Bazel-builds.patch"
-    v8_cxx23_patch = tree / "patches" / "v8" / v8_cxx23_patch_name
-    v8_cxx23_patch.write_text(
-        "\n".join([
-            "diff --git a/bazel/defs.bzl b/bazel/defs.bzl",
-            "--- a/bazel/defs.bzl",
-            "+++ b/bazel/defs.bzl",
-            "@@ -152 +152 @@",
-            "-                \"-std=c++20\",",
-            "+                \"-std=c++23\",",
-        ]) + "\n",
-        encoding="utf-8",
-    )
-
-    append_bazel_string_list_item(v8_module, "PATCHES", v8_cxx23_patch_name)
-    # mksnapshot runs on the Linux host in a cross-build, so V8 cannot infer
-    # Android from the execution platform. Passing an empty target OS selects
-    # the generic embedded writer (including 64 KiB ARM64 alignment), while
-    # Android requires V8's Android writer behavior and 16 KiB alignment.
-    v8_android_snapshot_patch_name = "0044-Set-Android-mksnapshot-target-OS.patch"
-    v8_android_snapshot_patch = tree / "patches" / "v8" / v8_android_snapshot_patch_name
-    v8_android_snapshot_patch.write_text(
-        "\n".join([
-            "diff --git a/bazel/defs.bzl b/bazel/defs.bzl",
-            "--- a/bazel/defs.bzl",
-            "+++ b/bazel/defs.bzl",
-            "@@ -548,5 +548 @@ def v8_mksnapshot(name, args, suffix = \"\"):",
-            "-        target_os = select({",
-            "-            \"@v8//bazel/config:is_macos\": \"mac\",",
-            "-            \"@v8//bazel/config:is_windows\": \"win\",",
-            "-            \"//conditions:default\": \"\",",
-            "-        }),",
-            "+        target_os = \"android\",",
-            "@@ -557,5 +553 @@ def v8_mksnapshot(name, args, suffix = \"\"):",
-            "-        target_os = select({",
-            "-            \"@v8//bazel/config:is_macos\": \"mac\",",
-            "-            \"@v8//bazel/config:is_windows\": \"win\",",
-            "-            \"//conditions:default\": \"\",",
-            "-        }),",
-            "+        target_os = \"android\",",
-        ]) + "\n",
-        encoding="utf-8",
-    )
-
-    append_bazel_string_list_item(v8_module, "PATCHES", v8_android_snapshot_patch_name)
-
-    # V8's full-width WASM shuffle reducer relies on a default template
-    # argument through an alias template. Clang rejects deduction for alias
-    # templates here, so spell out the already-intended 128-bit shuffle width.
-    v8_shuffle_patch_name = "0045-Explicit-SIMD-shuffle-array-size.patch"
-    v8_shuffle_patch = tree / "patches" / "v8" / v8_shuffle_patch_name
-    v8_shuffle_patch.write_text(
-        "\n".join([
-            "diff --git a/src/compiler/turboshaft/wasm-shuffle-reducer.cc b/src/compiler/turboshaft/wasm-shuffle-reducer.cc",
-            "--- a/src/compiler/turboshaft/wasm-shuffle-reducer.cc",
-            "+++ b/src/compiler/turboshaft/wasm-shuffle-reducer.cc",
-            "@@ -522 +522 @@",
-            "-    SimdShuffle::ShuffleArray shuffle_bytes;",
-            "+    SimdShuffle::ShuffleArray<kSimd128Size> shuffle_bytes;",
-        ]) + "\n",
-        encoding="utf-8",
-    )
-
-    append_bazel_string_list_item(v8_module, "PATCHES", v8_shuffle_patch_name)
-
-    # V8 declares native_context in CreateObjectLiteral but never consumes it.
-    # The cross-built host V8 library treats warnings as errors, so remove the
-    # dead declaration rather than suppressing unused-variable diagnostics.
-    v8_dead_context_patch_name = "0046-Remove-unused-object-literal-native-context.patch"
-    v8_dead_context_patch = tree / "patches" / "v8" / v8_dead_context_patch_name
-    v8_dead_context_patch.write_text(
-        "\n".join([
-            "diff --git a/src/runtime/runtime-literals.cc b/src/runtime/runtime-literals.cc",
-            "--- a/src/runtime/runtime-literals.cc",
-            "+++ b/src/runtime/runtime-literals.cc",
-            "@@ -519 +518,0 @@ Handle<JSObject> CreateObjectLiteral(",
-            "-  DirectHandle<NativeContext> native_context = isolate->native_context();",
-        ]) + "\n",
-        encoding="utf-8",
-    )
-
-    append_bazel_string_list_item(v8_module, "PATCHES", v8_dead_context_patch_name)
 
     # Older iterations of this port moved gen-compile-cache to exec
     # configuration. Restore upstream's target configuration: workerd exposes

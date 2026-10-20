@@ -6,9 +6,9 @@ on:
   workflow_dispatch:
     inputs:
       wrangler_version:
-        description: "Wrangler version ('pinned' for stable 4.123.0, 'latest' for npm latest, or specific version)"
+        description: "Wrangler version ('latest' for npm latest, 'pinned' for 4.123.0, or specific version)"
         required: false
-        default: "pinned"
+        default: "latest"
         type: string
       force_rebuild:
         description: "Force rebuild workerd from source even if prebuilt exists"
@@ -39,7 +39,7 @@ jobs:
       - name: Resolve stable Wrangler and matching native dependencies
         id: versions
         env:
-          INPUT_VERSION: ${{ inputs.wrangler_version || 'pinned' }}
+          INPUT_VERSION: ${{ inputs.wrangler_version || 'latest' }}
         run: |
           set -Eeuo pipefail
           if [[ "$INPUT_VERSION" == "pinned" || -z "$INPUT_VERSION" ]]; then
