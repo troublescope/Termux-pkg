@@ -116,12 +116,8 @@ class PatchWorkerdAndroidTests(unittest.TestCase):
             # Check helpers.bzl was patched with use_execroot_entry_point = False
             self.assertIn("use_execroot_entry_point = False", helpers_file.read_text(encoding="utf-8"))
 
-            # Check tools BUILD.bazel was patched
-            self.assertIn("use_execroot_entry_point = False", tools_file.read_text(encoding="utf-8"))
-
-            # Check .bazelrc contains the setting
-            bazelrc_content = (tree / ".bazelrc").read_text(encoding="utf-8")
-            self.assertIn("build:android --@aspect_rules_js//js:use_execroot_entry_point=False", bazelrc_content)
+            # Check tools BUILD.bazel was untouched (js_binary does not have use_execroot_entry_point)
+            self.assertNotIn("use_execroot_entry_point", tools_file.read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

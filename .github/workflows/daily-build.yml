@@ -186,7 +186,9 @@ jobs:
           grep -Fx 'build:android --repo_env=CC=/usr/lib/llvm-19/bin/clang' workerd/.bazelrc
           grep -Fx 'build:android --host_linkopt=--ld-path=/usr/lib/llvm-19/bin/ld.lld' workerd/.bazelrc
           grep -Fx 'build:android --host_linkopt=-latomic' workerd/.bazelrc
-          grep -Fx 'build:android --@aspect_rules_js//js:use_execroot_entry_point=False' workerd/.bazelrc
+          if [[ -f workerd/src/pyodide/helpers.bzl ]]; then
+            grep -F 'use_execroot_entry_point = False' workerd/src/pyodide/helpers.bzl
+          fi
           if grep -q -F 'name = "rust_cc_common_link"' workerd/build/config/BUILD.bazel; then
             grep -A4 -F 'name = "rust_cc_common_link"' workerd/build/config/BUILD.bazel \
               | grep -F 'constraint_values = ["@platforms//os:android"]'
