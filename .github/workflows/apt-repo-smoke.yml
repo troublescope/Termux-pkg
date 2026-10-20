@@ -1,0 +1,46 @@
+name: Signed APT repository smoke
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "47 5 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: signed-termux-apt-smoke
+  cancel-in-progress: true
+
+jobs:
+  native-termux:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    env:
+      TERMUX_IMAGE: termux/termux-docker@sha256:3aed9c7fbcf9195a9919deaad418da006232864a779fb4f322d68a34887a2e15
+    steps:
+      - uses: actions/checkout@v7
+      - name: Verify pinned Termux ARM environment
+        run: |
+          set -Eeuo pipefail
+          test "$(uname -m)" = aarch64
+          docker pull "$TERMUX_IMAGE"
+          test "$(docker image inspect --format '{{.Architecture}}' "$TERMUX_IMAGE")" = arm64
+      - name: Install from signed APT repository in native aarch64 Termux
+        run: |
+          set -Eeuo pipefail
+          docker run --rm --privileged \
+            -v "$GITHUB_WORKSPACE:/workspace:ro" \
+            "$TERMUX_IMAGE" \
+            /entrypoint.sh bash -lc '
+              set -Eeuo pipefail
+              printf "%s\n" "deb https://packages.termux.dev/apt/termux-main stable main" > "$PREFIX/etc/apt/sources.list"
+              pkg update -y
+              pkg upgrade -y
+              bash /workspace/scripts/setup_apt_repo.sh
+              pkg install -y wrangler
+              wrangler_cli_version="$(wrangler --version)"
+              wrangler_pkg_version="$(dpkg-query -W -f=\${Version} wrangler)"
+              test "$wrangler_cli_version" = "$wrangler_pkg_version"
+              apt-cache policy wrangler | grep -F "http://144.21.61.111/termux"
+            '
