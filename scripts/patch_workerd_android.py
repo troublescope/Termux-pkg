@@ -452,6 +452,29 @@ uint64_t le64toh(uint64_t x) { return __builtin_bswap64(x); }
             '        "aarch64-linux-android": ["-Ctarget-feature=+crc"],\n',
         )
 
+    # workerd uses aspect_rules_js for pyodide tooling. On Android cross-builds,
+    # js_run_binary must not use the execroot entry point, otherwise rules_js
+    # creates a filegroup in target configuration which demands a Node.js
+    # runtime toolchain for Android (rules_nodejs has no Android toolchain).
+    pyodide_helpers = tree / "src" / "pyodide" / "helpers.bzl"
+    if pyodide_helpers.exists():
+        pyodide_text = pyodide_helpers.read_text(encoding="utf-8")
+        target_needle = 'tool = Label("//src/pyodide/tools:patch_pyodide_asm"),'
+        replacement = target_needle + "\n        use_execroot_entry_point = False,"
+        if target_needle in pyodide_text and "use_execroot_entry_point = False" not in pyodide_text:
+            replace_once(pyodide_helpers, target_needle, replacement)
+
+    pyodide_tools = tree / "src" / "pyodide" / "tools" / "BUILD.bazel"
+    if pyodide_tools.exists():
+        tools_text = pyodide_tools.read_text(encoding="utf-8")
+        bin_anchor = 'name = "patch_pyodide_asm",\n'
+        if bin_anchor in tools_text and "use_execroot_entry_point = False" not in tools_text:
+            replace_once(
+                pyodide_tools,
+                bin_anchor,
+                bin_anchor + "    use_execroot_entry_point = False,\n",
+            )
+
     bazelrc = tree / ".bazelrc"
     bazelrc_text = bazelrc.read_text(encoding="utf-8")
     if "build:android --config=unix" not in bazelrc_text:
@@ -462,6 +485,7 @@ uint64_t le64toh(uint64_t x) { return __builtin_bswap64(x); }
 # Keep host tools native to the Linux CI runner while target C/C++ uses the NDK.
 build:android --config=unix
 build:android --@capnp-cpp//src/kj:libdl=False
+build:android --@aspect_rules_js//js:use_execroot_entry_point=False
 # Build-time target executables (notably gen-compile-cache) stay in Android
 # target configuration and are executed through the CI-provided Termux runner.
 build:android --//build/config:target_run_under=/usr/local/bin/workerd-android-run-under
@@ -504,6 +528,15 @@ build:release_android --@workerd//src/workerd/util:use_perfetto=False
             bazelrc,
             "build:android --@capnp-cpp//src/kj:libdl=False\n",
             "build:android --@capnp-cpp//src/kj:libdl=False\n" + runner_setting,
+        )
+        bazelrc_text = bazelrc.read_text(encoding="utf-8")
+
+    execroot_setting = "build:android --@aspect_rules_js//js:use_execroot_entry_point=False\n"
+    if execroot_setting not in bazelrc_text:
+        replace_once(
+            bazelrc,
+            "build:android --@capnp-cpp//src/kj:libdl=False\n",
+            "build:android --@capnp-cpp//src/kj:libdl=False\n" + execroot_setting,
         )
 
     print(f"Patched workerd Android target in {tree}")
