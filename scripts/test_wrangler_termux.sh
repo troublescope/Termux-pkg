@@ -6,7 +6,7 @@ if [[ $# -ne 4 ]]; then
   exit 2
 fi
 
-deb=$1
+deb=$(realpath "$1")
 expected=$2
 expected_workerd=$3
 expected_esbuild=$4

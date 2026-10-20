@@ -5,6 +5,16 @@ on:
     - cron: "23 4 * * 1"
   workflow_dispatch:
     inputs:
+      wrangler_version:
+        description: "Wrangler version ('pinned' for stable 4.123.0, 'latest' for npm latest, or specific version)"
+        required: false
+        default: "pinned"
+        type: string
+      force_rebuild:
+        description: "Force rebuild workerd from source even if prebuilt exists"
+        required: false
+        default: false
+        type: boolean
       dry_run:
         description: "Build and test only; do not publish release"
         required: false
@@ -28,27 +38,55 @@ jobs:
 
       - name: Resolve stable Wrangler and matching native dependencies
         id: versions
+        env:
+          INPUT_VERSION: ${{ inputs.wrangler_version || 'pinned' }}
         run: |
           set -Eeuo pipefail
-          wrangler=$(curl -fsSL --retry 4 --retry-all-errors \
-            https://registry.npmjs.org/wrangler/latest | jq -r .version)
-          test -n "$wrangler" -a "$wrangler" != null
-          for attempt in 1 2 3 4 5; do
-            if git clone --filter=blob:none --depth=1 --branch "wrangler@$wrangler" \
-              https://github.com/cloudflare/workers-sdk.git workers-sdk; then
-              break
-            fi
-            rm -rf workers-sdk
-            if [[ "$attempt" == 5 ]]; then
-              echo "workers-sdk tag wrangler@$wrangler was not available after retries" >&2
-              exit 1
-            fi
-            sleep 10
-          done
-          workerd=$(sed -n 's/^  workerd: "\([^"]*\)"/\1/p' workers-sdk/pnpm-workspace.yaml | head -n1)
-          esbuild=$(sed -n 's/^  esbuild: "\([^"]*\)"/\1/p' workers-sdk/pnpm-workspace.yaml | head -n1)
-          node_version=$(jq -r '.volta.node' workers-sdk/package.json)
-          pnpm_version=$(jq -r '.packageManager' workers-sdk/package.json | sed 's/^pnpm@//')
+          if [[ "$INPUT_VERSION" == "pinned" || -z "$INPUT_VERSION" ]]; then
+            wrangler="4.123.0"
+            workerd="1.20260811.1"
+            esbuild="0.28.1"
+            node_version="22.15.0"
+            pnpm_version="10.33.0"
+          elif [[ "$INPUT_VERSION" == "latest" ]]; then
+            wrangler=$(curl -fsSL --retry 4 --retry-all-errors \
+              https://registry.npmjs.org/wrangler/latest | jq -r .version)
+            test -n "$wrangler" -a "$wrangler" != null
+          else
+            wrangler="$INPUT_VERSION"
+          fi
+
+          if [[ "$INPUT_VERSION" != "pinned" && -n "${wrangler:-}" && "$wrangler" != "4.123.0" ]]; then
+            for attempt in 1 2 3 4 5; do
+              if git clone --filter=blob:none --depth=1 --branch "wrangler@$wrangler" \
+                https://github.com/cloudflare/workers-sdk.git workers-sdk; then
+                break
+              fi
+              rm -rf workers-sdk
+              if [[ "$attempt" == 5 ]]; then
+                echo "workers-sdk tag wrangler@$wrangler was not available after retries" >&2
+                exit 1
+              fi
+              sleep 10
+            done
+            workerd=$(sed -n 's/^  workerd: "\([^"]*\)"/\1/p' workers-sdk/pnpm-workspace.yaml | head -n1)
+            esbuild=$(sed -n 's/^  esbuild: "\([^"]*\)"/\1/p' workers-sdk/pnpm-workspace.yaml | head -n1)
+            node_version=$(jq -r '.volta.node' workers-sdk/package.json)
+            pnpm_version=$(jq -r '.packageManager' workers-sdk/package.json | sed 's/^pnpm@//')
+          elif [[ "$INPUT_VERSION" == "pinned" || "$wrangler" == "4.123.0" ]]; then
+            for attempt in 1 2 3 4 5; do
+              if git clone --filter=blob:none --depth=1 --branch "wrangler@$wrangler" \
+                https://github.com/cloudflare/workers-sdk.git workers-sdk; then
+                break
+              fi
+              rm -rf workers-sdk
+              if [[ "$attempt" == 5 ]]; then
+                echo "workers-sdk tag wrangler@$wrangler was not available after retries" >&2
+                exit 1
+              fi
+              sleep 10
+            done
+          fi
           test -n "$workerd" -a -n "$esbuild" -a -n "$node_version" -a -n "$pnpm_version"
           printf 'wrangler=%s\nworkerd=%s\nesbuild=%s\nnode=%s\npnpm=%s\n' \
             "$wrangler" "$workerd" "$esbuild" "$node_version" "$pnpm_version"
@@ -179,22 +217,27 @@ jobs:
         id: prebuilt-workerd
         env:
           WORKERD_VERSION: ${{ steps.versions.outputs.workerd }}
+          FORCE_REBUILD: ${{ inputs.force_rebuild || false }}
           GH_TOKEN: ${{ secrets.RELEASE_TOKEN || github.token }}
         run: |
           set -Eeuo pipefail
           mkdir -p native
           found="false"
-          pattern="workerd-${WORKERD_VERSION}-android-arm64.tar.gz"
-          echo "Checking GitHub Releases for matching $pattern..."
-          if gh release download --repo "$GITHUB_REPOSITORY" --pattern "$pattern" --dir /tmp/prebuilt-workerd 2>/dev/null; then
-            if [[ -f "/tmp/prebuilt-workerd/$pattern" ]]; then
-              echo "Found prebuilt workerd! Extracting..."
-              tar -xzf "/tmp/prebuilt-workerd/$pattern" -C native
-              if [[ -x "native/workerd" ]]; then
-                echo "Prebuilt workerd successfully restored!"
-                found="true"
+          if [[ "$FORCE_REBUILD" != "true" ]]; then
+            pattern="workerd-${WORKERD_VERSION}-android-arm64.tar.gz"
+            echo "Checking GitHub Releases for matching $pattern..."
+            if gh release download --repo "$GITHUB_REPOSITORY" --pattern "$pattern" --dir /tmp/prebuilt-workerd 2>/dev/null; then
+              if [[ -f "/tmp/prebuilt-workerd/$pattern" ]]; then
+                echo "Found prebuilt workerd! Extracting..."
+                tar -xzf "/tmp/prebuilt-workerd/$pattern" -C native
+                if [[ -x "native/workerd" ]]; then
+                  echo "Prebuilt workerd successfully restored!"
+                  found="true"
+                fi
               fi
             fi
+          else
+            echo "force_rebuild requested; skipping prebuilt release check"
           fi
           echo "found=$found" >> "$GITHUB_OUTPUT"
 
@@ -274,7 +317,22 @@ jobs:
           "$ndk_prebuilt/bin/llvm-nm" --defined-only "$builtins" \
             | grep -E '(^|[[:space:]])__clear_cache$'
           printf 'Android compiler-rt builtins: %s\n' "$builtins"
+          sudo apt-get install -y --no-install-recommends ccache
+          ccache --version
+          export CCACHE_DIR=/home/runner/.cache/ccache
+          mkdir -p "$CCACHE_DIR"
+          ccache -M 5G
           GOBIN="$HOME/.local/bin" go install github.com/bazelbuild/bazelisk@latest
+
+      - name: Cache compiler ccache objects
+        if: steps.prebuilt-workerd.outputs.found != 'true'
+        uses: actions/cache@v4
+        with:
+          path: /home/runner/.cache/ccache
+          key: ccache-${{ runner.os }}-${{ steps.versions.outputs.workerd }}-${{ github.sha }}
+          restore-keys: |
+            ccache-${{ runner.os }}-${{ steps.versions.outputs.workerd }}-
+            ccache-${{ runner.os }}-
 
       - name: Prepare Android build-time target runner
         if: steps.prebuilt-workerd.outputs.found != 'true'
@@ -288,15 +346,27 @@ jobs:
             echo qemu-termux-preflight-ok
           '
 
+      - name: Cache Bazel compilation objects
+        if: steps.prebuilt-workerd.outputs.found != 'true'
+        uses: actions/cache@v4
+        with:
+          path: /home/runner/.cache/bazel-disk
+          key: bazel-disk-${{ steps.versions.outputs.workerd }}-${{ github.sha }}
+          restore-keys: |
+            bazel-disk-${{ steps.versions.outputs.workerd }}-
+            bazel-disk-
+
       - name: Build matching workerd from source for Android aarch64
         if: steps.prebuilt-workerd.outputs.found != 'true'
         working-directory: workerd
         run: |
           set -Eeuo pipefail
+          mkdir -p /home/runner/.cache/bazel-disk
           "$HOME/.local/bin/bazelisk" build //src/workerd/server:workerd \
             --enable_platform_specific_config=false \
             --config=release_android \
             --platforms=//:android_arm64 \
+            --disk_cache=/home/runner/.cache/bazel-disk \
             --jobs=4 \
             --verbose_failures
 
@@ -322,10 +392,7 @@ jobs:
           done
           sha256sum native/workerd native/esbuild
           rm -rf workerd
-          # Bazel target tools run through the Termux/QEMU wrapper and can leave
-          # cache entries owned by a different uid. Cache reclamation must not
-          # turn an already-verified Android artifact into a failed release gate.
-          sudo rm -rf "$HOME/.cache/bazel" || true
+          sudo chown -R runner:docker "$HOME/.cache" /home/runner/.cache 2>/dev/null || true
           df -h .
 
       - name: Assemble Wrangler Termux package
