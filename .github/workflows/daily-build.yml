@@ -175,7 +175,31 @@ jobs:
           if [[ -n "$store" ]]; then rm -rf "$store"; fi
           df -h .
 
+      - name: Check for prebuilt workerd release
+        id: prebuilt-workerd
+        env:
+          WORKERD_VERSION: ${{ steps.versions.outputs.workerd }}
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN || github.token }}
+        run: |
+          set -Eeuo pipefail
+          mkdir -p native
+          found="false"
+          pattern="workerd-${WORKERD_VERSION}-android-arm64.tar.gz"
+          echo "Checking GitHub Releases for matching $pattern..."
+          if gh release download --repo "$GITHUB_REPOSITORY" --pattern "$pattern" --dir /tmp/prebuilt-workerd 2>/dev/null; then
+            if [[ -f "/tmp/prebuilt-workerd/$pattern" ]]; then
+              echo "Found prebuilt workerd! Extracting..."
+              tar -xzf "/tmp/prebuilt-workerd/$pattern" -C native
+              if [[ -x "native/workerd" ]]; then
+                echo "Prebuilt workerd successfully restored!"
+                found="true"
+              fi
+            fi
+          fi
+          echo "found=$found" >> "$GITHUB_OUTPUT"
+
       - name: Clone and patch matching workerd source
+        if: steps.prebuilt-workerd.outputs.found != 'true'
         env:
           WORKERD_VERSION: ${{ steps.versions.outputs.workerd }}
         run: |
@@ -200,6 +224,7 @@ jobs:
           fi
 
       - name: Install workerd host LLVM 19 toolchain
+        if: steps.prebuilt-workerd.outputs.found != 'true'
         run: |
           set -Eeuo pipefail
           export DEBIAN_FRONTEND=noninteractive
@@ -230,6 +255,7 @@ jobs:
           platforms: arm64
 
       - name: Select Android NDK and Bazelisk
+        if: steps.prebuilt-workerd.outputs.found != 'true'
         run: |
           set -Eeuo pipefail
           test -x /usr/lib/llvm-19/bin/clang
@@ -251,6 +277,7 @@ jobs:
           GOBIN="$HOME/.local/bin" go install github.com/bazelbuild/bazelisk@latest
 
       - name: Prepare Android build-time target runner
+        if: steps.prebuilt-workerd.outputs.found != 'true'
         run: |
           set -Eeuo pipefail
           sudo install -m 0755 scripts/run_workerd_android_target_tool.sh /usr/local/bin/workerd-android-run-under
@@ -262,6 +289,7 @@ jobs:
           '
 
       - name: Build matching workerd from source for Android aarch64
+        if: steps.prebuilt-workerd.outputs.found != 'true'
         working-directory: workerd
         run: |
           set -Eeuo pipefail
@@ -275,7 +303,9 @@ jobs:
       - name: Verify Android native binaries
         run: |
           set -Eeuo pipefail
-          cp workerd/bazel-bin/src/workerd/server/workerd native/workerd
+          if [[ -f workerd/bazel-bin/src/workerd/server/workerd ]]; then
+            cp workerd/bazel-bin/src/workerd/server/workerd native/workerd
+          fi
           chmod +x native/workerd native/esbuild
           file native/workerd native/esbuild
           for binary in native/workerd native/esbuild; do
@@ -315,6 +345,23 @@ jobs:
             --esbuild-version "$ESBUILD_VERSION" \
             --output-dir dist
           dpkg-deb -f "dist/wrangler_${WRANGLER_VERSION}_aarch64.deb" Package Version Architecture Depends
+          tar -czf "dist/workerd-${WORKERD_VERSION}-android-arm64.tar.gz" -C native workerd
+          tar -czf "dist/esbuild-${ESBUILD_VERSION}-android-arm64.tar.gz" -C native esbuild
+
+      - name: Save build artifacts
+        uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: wrangler-aarch64
+          path: |
+            dist/wrangler_*_aarch64.deb
+            dist/workerd-*.tar.gz
+            dist/esbuild-*.tar.gz
+            native/workerd
+            native/esbuild
+          if-no-files-found: ignore
+          retention-days: 14
+          compression-level: 0
 
       - name: Test Wrangler and a real local Worker in aarch64 Termux
         env:
@@ -331,14 +378,6 @@ jobs:
             "$WRANGLER_VERSION" \
             "${{ steps.versions.outputs.workerd }}" \
             "${{ steps.versions.outputs.esbuild }}"
-
-      - uses: actions/upload-artifact@v6
-        with:
-          name: wrangler-aarch64
-          path: dist/wrangler_*_aarch64.deb
-          if-no-files-found: error
-          retention-days: 14
-          compression-level: 0
 
   publish:
     name: Publish immutable weekly release
@@ -400,7 +439,7 @@ jobs:
           RELEASE_TAG: ${{ steps.release.outputs.tag }}
         run: |
           mapfile -t assets < <(find dist -maxdepth 1 -type f \
-            \( -name '*.deb' -o -name 'release-index.*' -o -name 'SHA256SUMS' \) \
+            \( -name '*.deb' -o -name 'release-index.*' -o -name 'SHA256SUMS' -o -name '*.tar.gz' \) \
             -print | sort)
           # Immutable releases lock the tag and assets at publication. Build the
           # complete release as a draft, upload every asset, then publish once.

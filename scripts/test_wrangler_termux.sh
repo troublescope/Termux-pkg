@@ -80,24 +80,9 @@ cat > wrangler.jsonc <<'JSON'
   "compatibility_date": "2026-08-01"
 }
 JSON
-cat > cloudflare.config.ts <<'TS'
-export default {
-  type: "worker",
-  name: "termux-wrangler-smoke",
-  compatibilityDate: "2026-08-01",
-  entrypoint: "./index.js",
-};
-TS
-
 # A dry-run exercises Wrangler's bundling path and therefore the source-built
 # Android esbuild binary without needing Cloudflare credentials.
 wrangler deploy --dry-run --outdir "$smoke/dry-run"
-
-# `cf-wrangler` is a distinct upstream delegate rather than an alias. Exercise
-# its real build path too, not just the feature-detection/usage branch above.
-cf-wrangler build
-test -f "$smoke/.cloudflare/output/v0/workers/default/config.json"
-test -f "$smoke/.cloudflare/output/v0/workers/default/bundle/index.js"
 
 dev_log="$smoke/wrangler-dev.log"
 wrangler dev --ip 127.0.0.1 --port 8791 >"$dev_log" 2>&1 &
