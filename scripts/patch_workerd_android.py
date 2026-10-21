@@ -208,7 +208,7 @@ selects.config_setting_group(
             '    patch_args = ["-p1"],\n',
             '    patch_args = ["-p1"],\n'
             '    patch_cmds = [\n'
-            '        "python3 -c \'import pathlib; p = pathlib.Path(\\\"bazel/defs.bzl\\\"); text = p.read_text(); text = text.replace(\\\"//conditions:default\\\\\\\": \\\\\\\"\\\\\\\",\\\", \\\"//conditions:default\\\\\\\": \\\\\\\"android\\\\\\\",\\\"); text = text.replace(\\\"-std=c++20\\\", \\\"-std=c++23\\\"); p.write_text(text)\'",\n'
+            '        "python3 -c \'import pathlib; p = pathlib.Path(\\\"bazel/defs.bzl\\\"); text = p.read_text(); text = text.replace(\\\"return \\\\\\\"target\\\\\\\"\\\", \\\"return \\\\\\\"exec\\\\\\\"\\\"); text = text.replace(\\\"//conditions:default\\\\\\\": \\\\\\\"\\\\\\\",\\\", \\\"//conditions:default\\\\\\\": \\\\\\\"android\\\\\\\",\\\"); text = text.replace(\\\"-std=c++20\\\", \\\"-std=c++23\\\"); p.write_text(text)\'",\n'
             '        "python3 -c \'import pathlib; p = pathlib.Path(\\\"src/base/debug/stack_trace_android.cc\\\"); p.is_file() and p.write_text(p.read_text().replace(\\\"<src/base/platform/platform.h>\\\", \\\"\\\\\\\"src/base/platform/platform.h\\\\\\\"\\\"))\'",\n'
             '        "python3 -c \'import pathlib; p = pathlib.Path(\\\"src/compiler/turboshaft/wasm-shuffle-reducer.cc\\\"); p.is_file() and p.write_text(p.read_text().replace(\\\"SimdShuffle::ShuffleArray shuffle_bytes;\\\", \\\"SimdShuffle::ShuffleArray<kSimd128Size> shuffle_bytes;\\\"))\'",\n'
             '        "python3 -c \'import pathlib; p = pathlib.Path(\\\"src/runtime/runtime-literals.cc\\\"); p.is_file() and p.write_text(p.read_text().replace(\\\"DirectHandle<NativeContext> native_context = isolate->native_context();\\\", \\\"\\\"))\'",\n'

@@ -55,8 +55,15 @@ class PatchWorkerdAndroidTests(unittest.TestCase):
                 '#include <simdutf.h>\n', encoding="utf-8"
             )
             (tree / "patches" / "v8").mkdir(parents=True)
-            (tree / "build" / "deps" / "v8.MODULE.bazel").write_text(
-                'PATCHES = [\n    "0001-v8.patch",\n]\n', encoding="utf-8"
+            v8_module_file = tree / "build" / "deps" / "v8.MODULE.bazel"
+            v8_module_file.write_text(
+                'PATCHES = [\n    "0001-v8.patch",\n]\n'
+                'http_archive(\n'
+                '    name = "v8",\n'
+                '    patch_args = ["-p1"],\n'
+                '    patches = ["//:patches/v8/" + p for p in PATCHES],\n'
+                ')\n',
+                encoding="utf-8",
             )
             (tree / "build" / "wd_js_bundle.bzl").write_text(
                 '        "_tool": attr.label(\n'
@@ -137,6 +144,11 @@ class PatchWorkerdAndroidTests(unittest.TestCase):
 
             # Check tls.rs was patched for android
             self.assertIn('target_os = "android"', tls_file.read_text(encoding="utf-8"))
+
+            # Check v8.MODULE.bazel has patch_cmds configuring V8 generators in exec config
+            v8_module_patched = v8_module_file.read_text(encoding="utf-8")
+            self.assertIn("patch_cmds =", v8_module_patched)
+            self.assertIn('return \\\\\\"exec\\\\\\"', v8_module_patched)
 
 
 if __name__ == "__main__":
